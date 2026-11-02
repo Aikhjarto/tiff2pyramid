@@ -93,7 +93,7 @@ are all that is left of it. `ice2pyramid.py` reads the full-resolution level, pu
 together without their overlap and writes the same kind of pyramidal TIFF as `tiff2pyramid.py`.
 
 ```sh
-python ice2pyramid.py pano.dzi                           # writes pano_jpeg_q90.tif next to it
+python ice2pyramid.py pano.dzi                           # writes pano_jpeg_q85.tif next to it
 python ice2pyramid.py pano_files --tmpdir /big/disk -o /srv/tiles --name Pano2026
 ```
 
@@ -110,7 +110,15 @@ Notes:
   chosen to hold about 256 MB of tiles (`--band-rows` sets it by hand). With 8 tile rows of a
   200000 px wide panorama, memory use went beyond 2.5 GB.
 - The JPEG tiles are decoded and encoded again, so a little quality is lost; `-q` and the other
-  output options work as in `tiff2pyramid.py`.
+  output options work as in `tiff2pyramid.py`, but the default quality is 85. ICE compresses its
+  tiles quite strongly, and storing them again at Q 90 (plain RGB, see above) only makes the file
+  bigger. Measured on a 108312×5013 ICE export with 42 MB of tiles:
+
+  | `-q` | size | compared with the ICE tiles |
+  |---|---|---|
+  | 75 | 55 MB | 42.9 dB |
+  | 85 | 76 MB | 44.6 dB |
+  | 90 | 266 MB | 48.4 dB |
 - When interrupted or killed (SIGTERM, SIGHUP), the temporary strips and the unfinished output are
   removed.
 

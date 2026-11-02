@@ -167,7 +167,9 @@ def convert(pyvips, path, args):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("descriptors", nargs="+", help="Deep Zoom descriptors (.dzi/.xml) or their _files folders")
-    p.add_argument("-q", "--quality", type=int, default=90, help="JPEG quality (default 90)")
+    p.add_argument("-q", "--quality", type=int, default=85,
+                   help="JPEG quality (default 85; the tiles are JPEG already, Q 90 or more "
+                   "only makes the file larger)")
     p.add_argument("-o", "--outdir", help="output directory (default: next to the descriptor)")
     p.add_argument("-s", "--suffix", default="_jpeg_q{q}",
                    help="appended to the descriptor name (default _jpeg_q{q}, {q} = quality)")
