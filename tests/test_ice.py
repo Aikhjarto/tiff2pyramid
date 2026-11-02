@@ -6,13 +6,13 @@
 # GNU General Public License as published by the Free Software Foundation; either version 2 of the
 # License, or (at your option) any later version. This program is distributed WITHOUT ANY WARRANTY;
 # see the file LICENSE for details.
-"""Test ice2pyramid.py on synthetic Deep Zoom tile sets.
+"""Test ice2pyramid.py on synthetic Deep Zoom and Zoomify tile sets.
 
 The source image encodes each pixel's position in its colour, so any shift or wrong overlap
 handling changes pixel values. It is cut into tiles with ICE's layout (254 px, 1 px overlap) by
 vips dzsave, once as lossless PNG (reassembly must be exact) and once like an ICE export
 (.xml descriptor, Format="jpeg", .jpg tiles, unrelated files in the tile folder), which is
-converted end to end.
+converted end to end. Zoomify tile sets of two sizes must also be reassembled exactly.
 
 Needs: pyvips.   Usage: python tests/test_ice.py [workdir]
 """
@@ -88,7 +88,30 @@ def main():
         failed += not ok
         print(f"{'ok  ' if ok else 'FAIL'} renamed descriptor, given as {arg.name}: tiles in {Path(tiles).name}")
 
-    print(f"{5 - failed} of 5 checks passed (files in {work})")
+    # 4. Zoomify (no overlap, tiles numbered through all levels in TileGroup folders): exact, at two
+    #    sizes where rounding the level sizes down instead of up would give a different numbering
+    for zw, zh in ((W, H), (1025, 513)):
+        zsrc = src.crop(0, 0, zw, zh)
+        zsrc.dzsave(str(work / f"zoom{zw}"), layout="zoomify", suffix=".png")
+        full, strips, _ = ice2pyramid.assemble(pyvips, str(work / f"zoom{zw}"), str(work), band_rows=2,
+                                               log=lambda s: None)
+        diff = (full.cast("int") - zsrc.cast("int")).abs().max()
+        ok = (full.width, full.height) == (zw, zh) and diff == 0
+        failed += not ok
+        print(f"{'ok  ' if ok else 'FAIL'} Zoomify {zw}x{zh} exact reassembly: max difference {diff:g}")
+        full = None
+        ice2pyramid.remove(strips)
+
+    # 5. Zoomify end to end, given as folder; output named after the folder
+    src.dzsave(str(work / "myzoom"), layout="zoomify")
+    subprocess.run([sys.executable, str(ROOT / "ice2pyramid.py"), "-f", str(work / "myzoom")],
+                   check=True, stdout=subprocess.DEVNULL)
+    out = pyvips.Image.new_from_file(str(work / "myzoom_jpeg_q85.tif"))
+    ok = (out.width, out.height) == (W, H) and out.get("n-pages") >= 2
+    failed += not ok
+    print(f"{'ok  ' if ok else 'FAIL'} Zoomify end to end: {out.width}x{out.height}, {out.get('n-pages')} levels")
+
+    print(f"{8 - failed} of 8 checks passed (files in {work})")
     sys.exit(1 if failed else 0)
 
 

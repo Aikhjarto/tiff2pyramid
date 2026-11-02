@@ -13,7 +13,8 @@ descriptor (<name>.dzi or <name>.xml) and a folder <name>_files with one subfold
 level. When the panorama itself was never saved, these tiles are all that is left of it.
 This script reads the full-resolution level, puts the tiles back together (removing their
 overlap) and writes the same output as tiff2pyramid: 8-bit, 256x256 JPEG tiles, pyramid,
-BigTIFF. Any other Deep Zoom tile set (e.g. from vips dzsave) works too.
+BigTIFF. Any other Deep Zoom tile set (e.g. from vips dzsave) works too, and so do Zoomify tile
+sets (a folder with ImageProperties.xml and TileGroup<n> subfolders).
 
 The tiles are joined in strips of --band-rows tile rows, which are written uncompressed to
 --tmpdir before the pyramid is built. That keeps memory use low, but needs
@@ -50,8 +51,10 @@ def read_descriptor(path):
 
 
 def find_descriptor(path):
-    """Accept the descriptor itself or its <name>_files folder."""
+    """Accept the descriptor itself, a Deep Zoom <name>_files folder or a Zoomify folder."""
     folder = os.path.normpath(path)  # also drops a trailing / or \
+    if os.path.isfile(os.path.join(folder, "ImageProperties.xml")):
+        return os.path.join(folder, "ImageProperties.xml")
     if os.path.isdir(folder) and folder.endswith("_files"):
         for candidate in (folder[:-len("_files")] + ".dzi", folder[:-len("_files")] + ".xml",
                           folder + ".dzi", folder + ".xml"):
@@ -69,40 +72,104 @@ def tile_extension(level_dir, fmt):
     raise ValueError(f"no tile 0_0.* in {level_dir}")
 
 
-def join_strip(pyvips, level_dir, ext, ts, ov, width, height, r0, r1, cols):
+class TileSet:
+    """The full-resolution tiles of a Deep Zoom or Zoomify tile set."""
+
+    def __init__(self, kind, source, width, height, tile_size, overlap, path):
+        self.kind, self.source = kind, source
+        self.width, self.height, self.tile_size, self.overlap = width, height, tile_size, overlap
+        self.cols, self.rows = math.ceil(width / tile_size), math.ceil(height / tile_size)
+        self.path = path  # (column, row) -> file name
+
+    def check(self):
+        """Raise ValueError if tiles are missing, else return the total size of the tiles."""
+        folders, missing, size = {}, [], 0
+        for r in range(self.rows):
+            for c in range(self.cols):
+                folder, name = os.path.split(self.path(c, r))
+                if folder not in folders:
+                    folders[folder] = {e.name: e for e in os.scandir(folder)} if os.path.isdir(folder) else {}
+                entry = folders[folder].get(name)
+                if entry is None:
+                    missing.append(os.path.join(folder, name))
+                else:
+                    size += entry.stat().st_size
+        if missing:
+            raise ValueError(f"{len(missing)} of {self.cols * self.rows} tiles missing, e.g. {missing[:3]}")
+        return size
+
+
+def open_deepzoom(descriptor):
+    ts, ov, fmt, width, height, tiles = read_descriptor(descriptor)
+    level_dir = os.path.join(tiles, str(math.ceil(math.log2(max(width, height)))))
+    ext = tile_extension(level_dir, fmt)
+    return TileSet("Deep Zoom", descriptor, width, height, ts, ov,
+                   lambda c, r: os.path.join(level_dir, f"{c}_{r}.{ext}"))
+
+
+def zoomify_levels(width, height, tile_size):
+    """Level sizes, smallest first: halved (rounding up) until the image fits into one tile."""
+    levels = [(width, height)]
+    while levels[-1][0] > tile_size or levels[-1][1] > tile_size:
+        w, h = levels[-1]
+        levels.append(((w + 1) // 2, (h + 1) // 2))
+    return levels[::-1]
+
+
+def open_zoomify(descriptor, root):
+    """Zoomify: tiles numbered through all levels, smallest first, 256 per TileGroup<n> folder."""
+    width, height = int(root.get("WIDTH")), int(root.get("HEIGHT"))
+    ts = int(root.get("TILESIZE", 256))
+    levels = zoomify_levels(width, height, ts)
+    counts = [math.ceil(w / ts) * math.ceil(h / ts) for w, h in levels]
+    if root.get("NUMTILES") and int(root.get("NUMTILES")) != sum(counts):
+        raise ValueError(f"{descriptor}: NUMTILES is {root.get('NUMTILES')}, the size gives {sum(counts)}")
+    folder, top, offset, cols = os.path.dirname(descriptor), len(levels) - 1, sum(counts[:-1]), math.ceil(width / ts)
+    ext = next((e for e in ("jpg", "png") if os.path.isfile(os.path.join(folder, "TileGroup0", f"0-0-0.{e}"))), "jpg")
+    return TileSet("Zoomify", descriptor, width, height, ts, 0,
+                   lambda c, r: os.path.join(folder, f"TileGroup{(offset + r * cols + c) // 256}",
+                                             f"{top}-{c}-{r}.{ext}"))
+
+
+def open_tileset(path):
+    descriptor = find_descriptor(path)
+    root = ET.parse(descriptor).getroot()
+    tag = root.tag.split("}")[-1]
+    if tag == "IMAGE_PROPERTIES":
+        return open_zoomify(descriptor, root)
+    if tag == "Image":
+        return open_deepzoom(descriptor)
+    raise ValueError(f"{descriptor} is neither a Deep Zoom nor a Zoomify descriptor")
+
+
+def join_strip(pyvips, tiles, r0, r1):
     """Tiles of rows r0..r1-1 with their overlap removed, as one lazy image."""
-    tiles = []
+    ts, ov, width, height = tiles.tile_size, tiles.overlap, tiles.width, tiles.height
+    parts = []
     for r in range(r0, r1):
-        for c in range(cols):
-            t = pyvips.Image.new_from_file(os.path.join(level_dir, f"{c}_{r}.{ext}"), access="sequential")
+        for c in range(tiles.cols):
+            t = pyvips.Image.new_from_file(tiles.path(c, r), access="sequential")
             w, h = min(ts, width - c * ts), min(ts, height - r * ts)
-            tiles.append(t.crop(ov if c else 0, ov if r else 0, w, h))
+            parts.append(t.crop(ov if c else 0, ov if r else 0, w, h))
     # fixed grid: the narrower tiles in the last column/row are padded and cropped off again
-    strip = pyvips.Image.arrayjoin(tiles, across=cols, hspacing=ts, vspacing=ts)
+    strip = pyvips.Image.arrayjoin(parts, across=tiles.cols, hspacing=ts, vspacing=ts)
     return strip.crop(0, 0, width, min(height, r1 * ts) - r0 * ts)
 
 
 def assemble(pyvips, descriptor, tmpdir, band_rows, log=print):
     """Return (full-resolution image, temporary strip files, size of the tiles read)."""
-    ts, ov, fmt, width, height, tiles = read_descriptor(descriptor)
-    level = math.ceil(math.log2(max(width, height)))
-    level_dir = os.path.join(tiles, str(level))
-    ext = tile_extension(level_dir, fmt)
-    cols, rows = math.ceil(width / ts), math.ceil(height / ts)
-    names = {e.name for e in os.scandir(level_dir)}
-    missing = [f"{c}_{r}.{ext}" for r in range(rows) for c in range(cols) if f"{c}_{r}.{ext}" not in names]
-    if missing:
-        raise ValueError(f"{len(missing)} of {cols * rows} tiles missing in {level_dir}, e.g. {missing[:3]}")
-    insize = sum(os.path.getsize(os.path.join(level_dir, n)) for n in names if n.endswith("." + ext))
+    tiles = open_tileset(descriptor)
+    insize = tiles.check()
+    width, height, rows = tiles.width, tiles.height, tiles.rows
     if band_rows <= 0:
         # libvips keeps every decoded tile of a strip until the strip is written
-        band_rows = max(1, STRIP_BYTES // (width * ts * 3))
+        band_rows = max(1, STRIP_BYTES // (width * tiles.tile_size * 3))
 
     strips = []
     try:
         for i, r0 in enumerate(range(0, rows, band_rows)):
             t0 = time.time()
-            strip = join_strip(pyvips, level_dir, ext, ts, ov, width, height, r0, min(rows, r0 + band_rows), cols)
+            strip = join_strip(pyvips, tiles, r0, min(rows, r0 + band_rows))
             fd, name = tempfile.mkstemp(suffix=".v", prefix="ice2pyramid-", dir=tmpdir)
             os.close(fd)
             strips.append(name)
@@ -124,23 +191,26 @@ def remove(files):
 
 def convert(pyvips, path, args):
     try:
-        descriptor = find_descriptor(path)
-        ts, ov, fmt, width, height, tiles = read_descriptor(descriptor)
+        tiles = open_tileset(path)
     except (ValueError, OSError, ET.ParseError, StopIteration, TypeError) as e:
         print(f"SKIP {path}: {e}", file=sys.stderr)
         return False
-    base = os.path.splitext(os.path.basename(descriptor))[0]
-    outdir = args.outdir or os.path.dirname(os.path.abspath(descriptor))
+    descriptor, width, height = tiles.source, tiles.width, tiles.height
+    beside = os.path.dirname(os.path.abspath(descriptor))
+    if tiles.kind == "Zoomify":  # the descriptor is always ImageProperties.xml inside the tile folder
+        base, beside = os.path.basename(beside), os.path.dirname(beside)
+    else:
+        base = os.path.splitext(os.path.basename(descriptor))[0]
+    outdir = args.outdir or beside
     out = os.path.join(outdir, (args.name if args.name else base + args.suffix.format(q=args.quality)) + ".tif")
     if os.path.exists(out) and not args.force:
         print(f"SKIP {path}: {out} exists (use -f to overwrite)", file=sys.stderr)
         return False
 
-    level = math.ceil(math.log2(max(width, height)))
-    cols, rows = math.ceil(width / ts), math.ceil(height / ts)
     tmpdir = args.tmpdir or outdir
     print(f"== {descriptor}")
-    print(f"   Deep Zoom {width}x{height}, {ts}px tiles + {ov}px overlap, level {level}: {cols}x{rows} tiles")
+    print(f"   {tiles.kind} {width}x{height}, {tiles.tile_size}px tiles"
+          f"{f' + {tiles.overlap}px overlap' if tiles.overlap else ''}: {tiles.cols}x{tiles.rows} at full resolution")
     print(f"   temporary strips: {human(width * height * 3)} in {tmpdir} "
           f"({human(shutil.disk_usage(tmpdir).free)} free)")
     print(f"   -> {out} (JPEG Q{args.quality}, {args.tile}px tiles, pyramid, BigTIFF)")
@@ -166,7 +236,9 @@ def convert(pyvips, path, args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("descriptors", nargs="+", help="Deep Zoom descriptors (.dzi/.xml) or their _files folders")
+    p.add_argument("descriptors", nargs="+",
+                   help="Deep Zoom descriptors (.dzi/.xml) or their _files folders, "
+                   "Zoomify folders or their ImageProperties.xml")
     p.add_argument("-q", "--quality", type=int, default=85,
                    help="JPEG quality (default 85; the tiles are JPEG already, Q 90 or more "
                    "only makes the file larger)")

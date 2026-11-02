@@ -28,7 +28,7 @@ import signal
 import sys
 import time
 
-__version__ = "0.3"
+__version__ = "0.4"
 
 FLOAT_FORMATS = ("float", "double", "complex", "dpcomplex")
 MONO = ("b-w", "grey16")
@@ -220,7 +220,8 @@ def write_pyramid(pyvips, im, out, args, insize):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("files", nargs="+", help="input TIFF files")
-    p.add_argument("-q", "--quality", type=int, default=90, help="JPEG quality (default 90)")
+    p.add_argument("-q", "--quality", type=int, default=85,
+                   help="JPEG quality (default 85; from 90 on libvips stores plain RGB, about 3x larger)")
     p.add_argument("-o", "--outdir", help="output directory (default: next to the input)")
     p.add_argument("-s", "--suffix", default="_jpeg_q{q}",
                    help="appended to the input name (default _jpeg_q{q}, {q} = quality)")

@@ -23,7 +23,7 @@ import pyvips
 
 ROOT = Path(__file__).resolve().parent.parent
 W, H = 600, 400                     # bigger than one 256 px tile, so a pyramid is built
-TOLERANCE = 2                       # JPEG Q90 on a flat colour
+TOLERANCE = 2                       # JPEG Q85 on a flat colour
 
 
 def const(vals, fmt, interp):
@@ -73,7 +73,7 @@ def main():
 
     failed = 0
     for name, exp in sorted(expect.items()):
-        out = pyvips.Image.new_from_file(str(work / "out" / f"{name}_jpeg_q90.tif"))
+        out = pyvips.Image.new_from_file(str(work / "out" / f"{name}_jpeg_q85.tif"))
         got = [round(out[i].avg()) for i in range(out.bands)]
         problems = []
         if out.format != "uchar":

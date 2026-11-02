@@ -16,7 +16,8 @@ channel onto a background colour and writes a pyramid of 256×256 JPEG tiles. Py
 accepted too; only its full-resolution level is read.
 
 `ice2pyramid.py` (`ICE2pyramid` when installed) does the same for panoramas that only exist as a
-Deep Zoom export of Microsoft Image Composite Editor (ICE), see [below](#ice2pyramid).
+Deep Zoom export of Microsoft Image Composite Editor (ICE), or as any other Deep Zoom or Zoomify
+tile set, see [below](#ice2pyramid).
 
 ## Requirements
 
@@ -55,8 +56,8 @@ ln -s "$PWD"/completions/* ~/.local/share/bash-completion/completions/
 ## Usage
 
 ```sh
-python tiff2pyramid.py pano.tif                         # writes pano_jpeg_q90.tif next to it
-python tiff2pyramid.py -q 85 -o /srv/tiles *.tif         # several files into one folder
+python tiff2pyramid.py pano.tif                         # writes pano_jpeg_q85.tif next to it
+python tiff2pyramid.py -o /srv/tiles *.tif              # several files into one folder
 python tiff2pyramid.py -n pano.tif                       # only show what would be done
 python tiff2pyramid.py pano.tif -o /srv/tiles --name Pano2026
 ```
@@ -68,15 +69,16 @@ What is done to each file is printed, for example:
    input 107687x5163, ushort, 4 bands, rgb16, alpha, ICC profile
    ICC profile -> sRGB (8 bit)
    flatten alpha onto background [0.0]
-   -> Panorama7.afphoto_jpeg_q90.tif (JPEG Q90, 256px tiles, pyramid, BigTIFF)
-   done in 31 s, 10 levels, 688.6 MB -> 242.5 MB (35 %)
+   -> Panorama7.afphoto_jpeg_q85.tif (JPEG Q85, 256px tiles, pyramid, BigTIFF)
+   done in 21 s, 10 levels, 688.6 MB -> 69.4 MB (10 %)
 ```
 
 Notes:
-- `-q` (default 90) is the JPEG quality. libvips writes JPEG-in-TIFF with 4:2:0 chroma subsampling
+- `-q` (default 85) is the JPEG quality. libvips writes JPEG-in-TIFF with 4:2:0 chroma subsampling
   below Q 90 and as plain RGB without subsampling from Q 90 on. Q 90 files are therefore about
-  three times the size of Q 85 files, for a difference that is hard to see. Since `iipsrv` sends
-  the stored tiles unchanged, Q is also exactly what the browser downloads.
+  three times the size of Q 85 files, for a difference that is hard to see (76 panoramas: 29.9 GB
+  at Q 90, 8.3 GB at Q 85). Since `iipsrv` sends the stored tiles unchanged, Q is also exactly
+  what the browser downloads.
 - `-b` sets the colour of transparent areas, 0–255, one value or `R,G,B` (default 0, black).
 - 16-bit input is scaled to 8 bit (not clipped). An embedded ICC profile is converted to sRGB;
   `--ignore-icc` skips that.
@@ -117,6 +119,10 @@ Notes:
   experiments, text files) are ignored; missing tiles are reported before anything is written.
 - Any Deep Zoom tile set works, not only ICE's (e.g. from `vips dzsave`). ICE writes
   `Format="jpeg"` but names the tiles `.jpg`, both spellings are found.
+- Zoomify tile sets work too: give the folder with `ImageProperties.xml` and the `TileGroup<n>`
+  subfolders (or that file). Their tiles have no overlap and are numbered through all zoom levels;
+  the numbering is checked against `NUMTILES`. The output is written next to the folder and named
+  after it.
 - The tiles are joined in strips that are written uncompressed to `--tmpdir` (default: the output
   folder) before the pyramid is built. That needs width × height × 3 bytes of temporary disk space,
   23 GB for a 198948×41968 panorama, and the free space is checked first.
@@ -124,9 +130,8 @@ Notes:
   chosen to hold about 256 MB of tiles (`--band-rows` sets it by hand). With 8 tile rows of a
   200000 px wide panorama, memory use went beyond 2.5 GB.
 - The JPEG tiles are decoded and encoded again, so a little quality is lost; `-q` and the other
-  output options work as in `tiff2pyramid.py`, but the default quality is 85. ICE compresses its
-  tiles quite strongly, and storing them again at Q 90 (plain RGB, see above) only makes the file
-  bigger. Measured on a 108312×5013 ICE export with 42 MB of tiles:
+  output options work as in `tiff2pyramid.py`. ICE compresses its tiles quite strongly, and
+  storing them again at Q 90 (plain RGB, see above) only makes the file bigger. Measured on a 108312×5013 ICE export with 42 MB of tiles:
 
   | `-q` | size | compared with the ICE tiles |
   |---|---|---|
