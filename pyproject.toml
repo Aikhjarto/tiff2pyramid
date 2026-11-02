@@ -34,5 +34,10 @@ ICE2pyramid = "ice2pyramid:main"
 [tool.setuptools]
 py-modules = ["tiff2pyramid", "ice2pyramid"]
 
+# bash-completion loads these from <prefix>/share/bash-completion/completions
+# (pip install --user: ~/.local/share/bash-completion/completions)
+[tool.setuptools.data-files]
+"share/bash-completion/completions" = ["completions/tiff2pyramid", "completions/ICE2pyramid"]
+
 [tool.setuptools.dynamic]
 version = { attr = "tiff2pyramid.__version__" }

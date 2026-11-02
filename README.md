@@ -38,6 +38,20 @@ pip install "tiff2pyramid @ git+https://github.com/Aikhjarto/tiff2pyramid"      
 
 The tests run on Linux, macOS and Windows on every push (GitHub Actions, `pyvips[binary]`).
 
+### Bash completion
+
+`pip install` also puts completions for both commands into `<prefix>/share/bash-completion/completions`
+(with `--user`: `~/.local/share/bash-completion/completions`), where bash-completion 2 loads them
+on first use. They complete the options, typical values (`-q`, `-b`, `--tile`), folders for
+`-o`/`--tmpdir`, and as input only TIFFs (`tiff2pyramid`) or `.dzi`/`.xml` descriptors and folders
+(`ICE2pyramid`). When running from a clone, link or source them:
+
+```sh
+mkdir -p ~/.local/share/bash-completion/completions
+ln -s "$PWD"/completions/* ~/.local/share/bash-completion/completions/
+# or, without bash-completion, in ~/.bashrc:  . /path/to/tiff2pyramid/completions/tiff2pyramid
+```
+
 ## Usage
 
 ```sh
@@ -178,6 +192,7 @@ Measured on a 132269×22508 panorama (6.5 GB as LZW TIFF):
 ```sh
 python tests/test_synthetic.py
 python tests/test_ice.py
+python tests/test_completion.py
 ```
 
 `test_synthetic.py` writes small constant-colour TIFFs for every supported input type (8/16-bit,
@@ -188,6 +203,10 @@ profile), converts them and checks colour, band count, format and pyramid of eac
 layout. From lossless PNG tiles the reassembled image must match exactly; an ICE-like copy (`.xml`
 descriptor, `Format="jpeg"`, `.jpg` tiles, unrelated files in the tile folder, renamed descriptor) is
 converted end to end.
+
+`test_completion.py` runs the bash completion and checks that it offers exactly the options of
+each script's `--help`, the right files and folders (also with spaces in their names) and option
+values in both `--opt value` and `--opt=value` form.
 
 ## License
 

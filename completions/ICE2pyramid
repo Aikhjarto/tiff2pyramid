@@ -1,0 +1,5 @@
+# bash completion for ICE2pyramid                                    -*- shell-script -*-
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# bash-completion loads completions by command name; both commands share one file.
+. "$(dirname "${BASH_SOURCE[0]}")/tiff2pyramid"

@@ -1,0 +1,85 @@
+# bash completion for tiff2pyramid and ICE2pyramid                 -*- shell-script -*-
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Installed by pip to <prefix>/share/bash-completion/completions, where bash-completion finds it
+# (with pip install --user: ~/.local/share/bash-completion/completions). Can also be sourced
+# directly. Needs no bash-completion helpers and works with bash 3.2 (macOS).
+
+_t2p_opts_tiff="-h --help -q --quality -o --outdir -s --suffix --name -b --background --white
+    --no-linear --ignore-icc --tile --tmpdir -f --force -n --dry-run --version"
+_t2p_opts_ice="-h --help -q --quality -o --outdir -s --suffix --name --tile --band-rows --tmpdir
+    -f --force -n --dry-run --version"
+
+# Sets cur and prev; "--opt=value" is split by bash into "--opt" "=" "value"
+_t2p_words() {
+    cur=${COMP_WORDS[COMP_CWORD]}
+    prev=${COMP_WORDS[COMP_CWORD-1]}
+    if [[ $cur == "=" ]]; then
+        cur=""
+    elif [[ $prev == "=" && $COMP_CWORD -ge 2 ]]; then
+        prev=${COMP_WORDS[COMP_CWORD-2]}
+    fi
+}
+
+# Folders, plus files matching the extended glob $1
+_t2p_files() {
+    local IFS=$'\n' extglob
+    extglob=$(shopt -p extglob)
+    shopt -s extglob
+    compopt -o filenames 2>/dev/null
+    COMPREPLY=($(compgen -d -- "$cur") $(compgen -f -X "!$1" -- "$cur"))
+    eval "$extglob"
+}
+
+# Folders only
+_t2p_dirs() {
+    local IFS=$'\n'  # folder names may contain spaces
+    compopt -o filenames 2>/dev/null
+    COMPREPLY=($(compgen -d -- "$cur"))
+}
+
+# Completes the value of an option shared by both scripts; returns 1 if prev takes no value
+_t2p_common_value() {
+    case $prev in
+        -o | --outdir | --tmpdir) _t2p_dirs ;;
+        -q | --quality) COMPREPLY=($(compgen -W "75 80 85 90 95" -- "$cur")) ;;
+        --tile) COMPREPLY=($(compgen -W "256 512" -- "$cur")) ;;
+        -s | --suffix) COMPREPLY=($(compgen -W "_jpeg_q{q}" -- "$cur")) ;;
+        --name) COMPREPLY=() ;;
+        *) return 1 ;;
+    esac
+    return 0  # also when compgen found nothing: no file names as option values
+}
+
+_tiff2pyramid() {
+    local cur prev
+    _t2p_words
+    _t2p_common_value && return
+    case $prev in
+        -b | --background) COMPREPLY=($(compgen -W "0 255 255,255,255" -- "$cur")); return ;;
+        --white) COMPREPLY=($(compgen -W "1 255 65535" -- "$cur")); return ;;
+    esac
+    if [[ $cur == -* ]]; then
+        COMPREPLY=($(compgen -W "$_t2p_opts_tiff" -- "$cur"))
+    else
+        _t2p_files '*.@([tT][iI][fF]|[tT][iI][fF][fF])'
+    fi
+}
+
+_ice2pyramid() {
+    local cur prev
+    _t2p_words
+    _t2p_common_value && return
+    case $prev in
+        --band-rows) COMPREPLY=($(compgen -W "1 2 4 8" -- "$cur")); return ;;
+    esac
+    if [[ $cur == -* ]]; then
+        COMPREPLY=($(compgen -W "$_t2p_opts_ice" -- "$cur"))
+    else
+        # descriptors; the <name>_files folders are offered as folders anyway
+        _t2p_files '*.@([dD][zZ][iI]|[xX][mM][lL])'
+    fi
+}
+
+complete -F _tiff2pyramid tiff2pyramid tiff2pyramid.py
+complete -F _ice2pyramid ICE2pyramid ice2pyramid.py
