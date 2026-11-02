@@ -1,0 +1,32 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.9", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install (with the prebuilt libvips of pyvips[binary])
+        run: python -m pip install ".[binary]"
+      - name: libvips version
+        run: python -c "import pyvips; print('pyvips', pyvips.__version__, 'libvips', pyvips.version(0), pyvips.version(1), pyvips.version(2))"
+      - name: Commands
+        run: |
+          tiff2pyramid --version
+          ICE2pyramid --version
+      - name: tiff2pyramid
+        run: python tests/test_synthetic.py
+      - name: ICE2pyramid
+        run: python tests/test_ice.py

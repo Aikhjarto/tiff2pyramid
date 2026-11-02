@@ -24,10 +24,11 @@ Notes:
 
 import argparse
 import os
+import signal
 import sys
 import time
 
-__version__ = "0.1"
+__version__ = "0.2"
 
 FLOAT_FORMATS = ("float", "double", "complex", "dpcomplex")
 MONO = ("b-w", "grey16")
@@ -44,6 +45,24 @@ def n_pages(im):
     return im.get("n-pages") if im.get_typeof("n-pages") else 1
 
 
+def load(pyvips, path, **kwargs):
+    """Open an image; for TIFF without libtiff's 50 MB memory limit.
+
+    Very wide panoramas are often written with strips of 50 MB or more, which
+    libvips refuses to read unless the limit is lifted. The input files are our
+    own, so the protection against hostile files is not needed.
+    """
+    with open(path, "rb") as f:
+        magic = f.read(4)
+    if magic in (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"):  # TIFF and BigTIFF, both byte orders
+        try:
+            return pyvips.Image.new_from_file(path, unlimited=True, **kwargs)
+        except pyvips.Error as e:
+            if "unlimited" not in str(e):  # older libvips without this option: load normally
+                raise
+    return pyvips.Image.new_from_file(path, **kwargs)
+
+
 def probe_max(pyvips, path, im):
     """Largest sample value, read from the smallest pyramid level if there is one.
 
@@ -52,16 +71,16 @@ def probe_max(pyvips, path, im):
     """
     pages = n_pages(im)
     if pages > 1:
-        small = pyvips.Image.new_from_file(path, page=pages - 1)
+        small = load(pyvips, path, page=pages - 1)
     else:
-        small = pyvips.Image.new_from_file(path, access="sequential")
+        small = load(pyvips, path, access="sequential")
     colour = small.extract_band(0, n=small.bands - 1) if small.hasalpha() else small
     return colour.max()
 
 
 def plan_and_build(pyvips, path, args):
     """Return (image ready for saving, list of human readable steps)."""
-    im = pyvips.Image.new_from_file(path, access="sequential")
+    im = load(pyvips, path, access="sequential")
     steps = [f"input {im.width}x{im.height}, {im.format}, {im.bands} bands, {im.interpretation}"
              f"{', alpha' if im.hasalpha() else ''}{f', pyramid with {n_pages(im)} levels' if n_pages(im) > 1 else ''}"
              f"{', ICC profile' if im.get_typeof('icc-profile-data') else ''}"]
@@ -85,7 +104,7 @@ def plan_and_build(pyvips, path, args):
         if args.white:
             white = args.white
         else:
-            m = probe_max(pyvips, path, pyvips.Image.new_from_file(path))
+            m = probe_max(pyvips, path, load(pyvips, path))
             if im.format in FLOAT_FORMATS and m <= 1.5:
                 white = 1.0
             elif m <= 255.5:
@@ -145,24 +164,55 @@ def convert(pyvips, path, args):
     print(f"   -> {out} (JPEG Q{args.quality}, {args.tile}px tiles, pyramid, BigTIFF)")
     if args.dry_run:
         return True
+    return write_pyramid(pyvips, im, out, args, os.path.getsize(path))
 
+
+def remove_quietly(path):
+    """Delete path if it exists; only warn if that fails (Windows: file still in use)."""
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError as e:
+        print(f"   WARNING: could not remove {path}: {e}", file=sys.stderr)
+
+
+def start_pyvips(tmpdir):
+    """Import pyvips with temporary files in tmpdir; make kill/hangup clean up like an error."""
+    # libvips writes the smaller pyramid levels to temporary files before assembling the
+    # output, keep them off a small /tmp (GLib reads TMPDIR on Windows too)
+    os.environ["TMPDIR"] = tmpdir
+    for name in ("SIGTERM", "SIGHUP"):  # no SIGHUP on Windows
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), lambda signum, frame: sys.exit(128 + signum))
+    import pyvips
+    # cached operations keep their files open, which stops renaming and deleting on Windows;
+    # every image here is processed only once, so the cache gains nothing
+    pyvips.cache_set_max(0)
+    return pyvips
+
+
+def write_pyramid(pyvips, im, out, args, insize):
+    """Save im as JPEG pyramid via <out>.part, check it, report; return success."""
     part = out + ".part"
     t0 = time.time()
     try:
         im.tiffsave(part, compression="jpeg", Q=args.quality, tile=True,
                     tile_width=args.tile, tile_height=args.tile, pyramid=True, bigtiff=True)
         check = pyvips.Image.new_from_file(part)
-        if ((check.width, check.height) != (im.width, im.height)
-                or (n_pages(check) < 2 and max(im.width, im.height) > args.tile)):
-            raise RuntimeError(f"unexpected result {check.width}x{check.height}, {n_pages(check)} levels")
+        size, levels = (check.width, check.height), n_pages(check)
+        del check  # Windows cannot rename a file that is still open
+        if size != (im.width, im.height) or (levels < 2 and max(im.width, im.height) > args.tile):
+            raise RuntimeError(f"unexpected result {size[0]}x{size[1]}, {levels} levels")
         os.replace(part, out)
-    except Exception as e:
-        if os.path.exists(part):
-            os.remove(part)
-        print(f"   FAILED: {e}", file=sys.stderr)
+    except BaseException as e:
+        remove_quietly(part)
+        if not isinstance(e, Exception):  # interrupted or killed
+            raise
+        detail = getattr(e, "detail", "").strip()
+        print(f"   FAILED: {getattr(e, 'message', e)}" + (f"\n   {detail}" if detail else ""), file=sys.stderr)
         return False
-    insize, outsize = os.path.getsize(path), os.path.getsize(out)
-    print(f"   done in {time.time() - t0:.0f} s, {n_pages(check)} levels, "
+    outsize = os.path.getsize(out)
+    print(f"   done in {time.time() - t0:.0f} s, {levels} levels, "
           f"{human(insize)} -> {human(outsize)} ({100 * outsize / insize:.0f} %)")
     return True
 
@@ -192,12 +242,7 @@ def main():
         p.error("--name only works with a single input file")
     args.background = [float(v) for v in args.background.split(",")]
 
-    # libvips writes the smaller pyramid levels to temporary files before
-    # assembling the output, keep them off a small /tmp
-    tmpdir = args.tmpdir or args.outdir or os.path.dirname(os.path.abspath(args.files[0]))
-    os.environ["TMPDIR"] = tmpdir
-    import pyvips
-
+    pyvips = start_pyvips(args.tmpdir or args.outdir or os.path.dirname(os.path.abspath(args.files[0])))
     ok = sum(convert(pyvips, f, args) for f in args.files)
     if ok != len(args.files):
         print(f"{len(args.files) - ok} of {len(args.files)} files failed or skipped", file=sys.stderr)

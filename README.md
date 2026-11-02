@@ -15,12 +15,28 @@ float, with an alpha channel, sometimes with an ICC profile, often without a pyr
 channel onto a background colour and writes a pyramid of 256×256 JPEG tiles. Pyramidal input is
 accepted too; only its full-resolution level is read.
 
+`ice2pyramid.py` (`ICE2pyramid` when installed) does the same for panoramas that only exist as a
+Deep Zoom export of Microsoft Image Composite Editor (ICE), see [below](#ice2pyramid).
+
 ## Requirements
 
 - libvips (tested with 8.18) with JPEG and TIFF support, and lcms for ICC profiles
 - Python ≥ 3.8 with [pyvips](https://github.com/libvips/pyvips)
-  - openSUSE Tumbleweed: `zypper install python313-pyvips`
-  - openSUSE Leap 16 (no package): `pip install --user pyvips`, which uses the installed libvips
+
+Installing the package gives the commands `tiff2pyramid` and `ICE2pyramid`:
+
+```sh
+pip install "tiff2pyramid[binary] @ git+https://github.com/Aikhjarto/tiff2pyramid"   # with a prebuilt libvips
+pip install "tiff2pyramid @ git+https://github.com/Aikhjarto/tiff2pyramid"            # uses the system libvips
+```
+
+- Windows, macOS: the `binary` variant needs nothing else. On macOS, `brew install vips` and the
+  plain variant work too.
+- Linux: libvips from the distribution, e.g. openSUSE Tumbleweed `zypper install python313-pyvips`
+  (then the scripts can also be run directly), openSUSE Leap 16 has libvips but no pyvips package,
+  so `pip install --user` it.
+
+The tests run on Linux, macOS and Windows on every push (GitHub Actions, `pyvips[binary]`).
 
 ## Usage
 
@@ -63,6 +79,40 @@ Notes:
   They go to the output folder unless `--tmpdir` is given, to keep them off a small `/tmp`.
 - Input is read sequentially, so memory use stays below about 1 GB even for multi-gigapixel
   panoramas (measured: 840 MB for a 107687×5163 16-bit image).
+- TIFFs are opened without libtiff's 50 MB memory limit (libvips `unlimited`). Very wide
+  panoramas are often written with strips larger than that, and libvips refuses to read them
+  otherwise ("Cumulated memory allocation ... is beyond the 52428800 cumulated byte limit").
+  Only convert files you trust.
+
+## ICE2pyramid
+
+Microsoft Image Composite Editor can export a panorama as a "Deep Zoom tileset": a descriptor
+(`<name>.dzi` or `<name>.xml`) and a folder `<name>_files` with one subfolder per zoom level, holding
+254×254 JPEG tiles with 1 px overlap. If the panorama was never saved in another format, these tiles
+are all that is left of it. `ice2pyramid.py` reads the full-resolution level, puts the tiles back
+together without their overlap and writes the same kind of pyramidal TIFF as `tiff2pyramid.py`.
+
+```sh
+python ice2pyramid.py pano.dzi                           # writes pano_jpeg_q90.tif next to it
+python ice2pyramid.py pano_files --tmpdir /big/disk -o /srv/tiles --name Pano2026
+```
+
+Notes:
+- The descriptor or its `_files` folder can be given. A descriptor renamed to `<name>_files.dzi`
+  with the tiles still in `<name>_files` is accepted too. Other files in the tile folder (earlier
+  experiments, text files) are ignored; missing tiles are reported before anything is written.
+- Any Deep Zoom tile set works, not only ICE's (e.g. from `vips dzsave`). ICE writes
+  `Format="jpeg"` but names the tiles `.jpg`, both spellings are found.
+- The tiles are joined in strips that are written uncompressed to `--tmpdir` (default: the output
+  folder) before the pyramid is built. That needs width × height × 3 bytes of temporary disk space,
+  23 GB for a 198948×41968 panorama, and the free space is checked first.
+- libvips keeps every decoded tile of a strip until the strip is written, so the strip height is
+  chosen to hold about 256 MB of tiles (`--band-rows` sets it by hand). With 8 tile rows of a
+  200000 px wide panorama, memory use went beyond 2.5 GB.
+- The JPEG tiles are decoded and encoded again, so a little quality is lost; `-q` and the other
+  output options work as in `tiff2pyramid.py`.
+- When interrupted or killed (SIGTERM, SIGHUP), the temporary strips and the unfinished output are
+  removed.
 
 ## Serving with iipsrv
 
@@ -119,11 +169,17 @@ Measured on a 132269×22508 panorama (6.5 GB as LZW TIFF):
 
 ```sh
 python tests/test_synthetic.py
+python tests/test_ice.py
 ```
 
-The test writes small constant-colour TIFFs for every supported input type (8/16-bit, grey/RGB,
-with and without alpha, linear and 0–255 float, CMYK, pyramidal input, embedded ICC profile),
-converts them and checks colour, band count, format and pyramid of each result.
+`test_synthetic.py` writes small constant-colour TIFFs for every supported input type (8/16-bit,
+grey/RGB, with and without alpha, linear and 0–255 float, CMYK, pyramidal input, embedded ICC
+profile), converts them and checks colour, band count, format and pyramid of each result.
+
+`test_ice.py` cuts an image whose colours encode the pixel position into Deep Zoom tiles with ICE's
+layout. From lossless PNG tiles the reassembled image must match exactly; an ICE-like copy (`.xml`
+descriptor, `Format="jpeg"`, `.jpg` tiles, unrelated files in the tile folder, renamed descriptor) is
+converted end to end.
 
 ## License
 
